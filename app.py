@@ -30,6 +30,8 @@ SYSTEM_INSTRUCTION = """
 ・より自然な言い方 
 ・ネイティブがよく使う表現 
 ・覚えておきたいポイント
+・【音声回答時のみ】発音・アクセント・リンキング（音のつながり）・イントネーションの詳細フィードバック
+
 ④ その後、次の問題を1問だけ出してください。 
 
 # 条件 
@@ -42,7 +44,7 @@ SYSTEM_INSTRUCTION = """
 ・同じ文型が続かないようにする 
 ・10問ごとに苦手な文法や表現を分析し、重点的に復習問題を出してください。
 ・分析した内容は「文法解説」「単語（品詞も含む）」「熟語、慣用句」に分類してまとめる
-・私が音声（ボイスメッセージや音声入力）で回答した旨が示された場合は、英文の正しさに加えて「発音・リンキング・イントネーションの良さ」も褒めてください。
+・音声データで回答があった場合は、英文の正しさに加えて、実際に聞こえる「発音・リンキング・イントネーションの良さや改善点」も具体的に評価・指導してください。
 ・ユーザーから10問ごとの復習ノート作成を求められた場合は、音読練習にも使い易い体裁で、10問分のレッスン内容（問題・解答・解説・NATポイント）を振り返る綺麗で読みやすい復習用ノートを作成してください。
 """
 
@@ -61,7 +63,7 @@ if not api_key:
 
 client = genai.Client(api_key=api_key)
 
-# APIに渡す会話履歴の管理（テキスト形式）
+# APIに渡す会話履歴の管理
 if "history" not in st.session_state:
     st.session_state.history = []
 
@@ -108,30 +110,68 @@ if len(st.session_state.history) == 0:
         st.session_state.history.append({"role": "model", "parts": [{"text": response.text}]})
 
 # ---------------------------------------------------------
-# チャット履歴の表示（最初のスタート用プロンプトは非表示）
+# チャット履歴の表示
 # ---------------------------------------------------------
 for msg in st.session_state.history:
-    text = msg["parts"][0]["text"]
-    if text == "スタート！最初の1問目を出題してください。":
+    # メッセージの内容を取り出し
+    parts = msg["parts"]
+    first_part = parts[0]
+    
+    # 初回スタート用の文字列は画面に表示しない
+    if isinstance(first_part, dict) and first_part.get("text") == "スタート！最初の1問目を出題してください。":
         continue
     
     avatar = "🤖" if msg["role"] == "model" else "👤"
     with st.chat_message(msg["role"], avatar=avatar):
-        st.write(text)
+        if isinstance(first_part, dict) and "text" in first_part:
+            st.write(first_part["text"])
+        elif isinstance(first_part, str):
+            st.write(first_part)
+        else:
+            st.write("🎙️ [音声で回答しました]")
 
 # ---------------------------------------------------------
-# ユーザー入力
+# 回答入力エリア（テキスト ＆ マイク録音）
 # ---------------------------------------------------------
-user_input = st.chat_input("英語で回答を入力してください...")
+st.write("---")
+audio_val = st.audio_input("🎙️ マイクを押して英語を声で回答する")
+user_input = st.chat_input("またはテキストで入力...")
 
-if user_input:
+# 音声入力があった場合の処理
+if audio_val:
+    audio_bytes = audio_val.read()
+    
+    # 画面と履歴に追加
+    user_part = types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav")
+    st.session_state.history.append({"role": "user", "parts": [user_part]})
+    
+    with st.chat_message("user", avatar="👤"):
+        st.audio(audio_bytes, format="audio/wav")
+        st.caption("録音した音声を送信しました")
+
+    with st.chat_message("model", avatar="🤖"):
+        with st.spinner("コーチが音声を聞いて採点中..."):
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=st.session_state.history,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    temperature=0.7,
+                )
+            )
+            st.write(response.text)
+            st.session_state.history.append({"role": "model", "parts": [{"text": response.text}]})
+            st.rerun()
+
+# テキスト入力があった場合の処理
+elif user_input:
     st.session_state.history.append({"role": "user", "parts": [{"text": user_input}]})
     
     with st.chat_message("user", avatar="👤"):
         st.write(user_input)
 
     with st.chat_message("model", avatar="🤖"):
-        with st.spinner("コーチが採点・分析中..."):
+        with st.spinner("コーチが採点中..."):
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=st.session_state.history,
