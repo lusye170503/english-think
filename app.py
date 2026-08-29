@@ -24,7 +24,7 @@ SYSTEM_INSTRUCTION = """
 ② 私が英訳します。 
 
 ③ 私が回答したら、以下の順番でフィードバックしてください。 
-※見やすさを最重視し、項目ごとに必ず改行と空行を入れて見やすくレイアウトしてください。
+※見やすさを重視し、項目ごとに必ず改行を入れて読みやすいレイアウトにしてください。
 
 【採点】
 ・◯点 / 100点
@@ -75,23 +75,37 @@ if not api_key:
 
 client = genai.Client(api_key=api_key)
 
-# チャット表示用メッセージ履歴
-if "display_messages" not in st.session_state:
-    st.session_state.display_messages = []
-
-# APIセッション（st.session_stateで保持）
-if "chat_session" not in st.session_state:
-    st.session_state.chat_session = client.chats.create(
-        model="gemini-2.5-flash",
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_INSTRUCTION,
-            temperature=0.7,
-        )
-    )
+# API送受信・画面表示用メッセージ構造の保持
+# 構造: [{"role": "user"|"model", "text": "...", "audio_bytes": bytes|None}]
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
 # 音声入力Widgetのリセット用キー
 if "audio_key_count" not in st.session_state:
     st.session_state.audio_key_count = 0
+
+def build_gemini_contents():
+    """
+    st.session_state.chat_history から Gemini APIが理解できる 
+    types.Content のリストを安全にビルドする
+    """
+    contents = []
+    for msg in st.session_state.chat_history:
+        role = msg["role"]
+        parts = []
+        
+        # テキスト部分の追加
+        if msg.get("text"):
+            parts.append(types.Part.from_text(text=msg["text"]))
+            
+        # 音声バイナリがある場合（最新の回答時のみセットされる）
+        if msg.get("audio_bytes"):
+            parts.append(types.Part.from_bytes(data=msg["audio_bytes"], mime_type="audio/wav"))
+            
+        if parts:
+            contents.append(types.Content(role=role, parts=parts))
+            
+    return contents
 
 # ---------------------------------------------------------
 # サイドバー機能
@@ -101,41 +115,57 @@ with st.sidebar:
     if st.button("📓 復習ノートを作成する（10問ごと）"):
         prompt_note = "これまでの10問分のレッスン内容（問題・解答・解説・ポイント）を振り返る、音読練習に使いやすい綺麗な復習用ノートを作成してください。「文法解説」「単語（品詞含む）」「熟語・慣用句」に分類した苦手分析も含めてください。"
         
+        st.session_state.chat_history.append({"role": "user", "text": prompt_note, "audio_bytes": None})
+        
         with st.spinner("復習ノートを生成中..."):
-            response = st.session_state.chat_session.send_message(prompt_note)
-            st.session_state.display_messages.append({"role": "user", "content": prompt_note})
-            st.session_state.display_messages.append({"role": "model", "content": response.text})
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=build_gemini_contents(),
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    temperature=0.7,
+                )
+            )
+            st.session_state.chat_history.append({"role": "model", "text": response.text, "audio_bytes": None})
             st.rerun()
 
     if st.button("🔄 チャットをリセット"):
-        st.session_state.display_messages = []
-        st.session_state.chat_session = client.chats.create(
-            model="gemini-2.5-flash",
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                temperature=0.7,
-            )
-        )
+        st.session_state.chat_history = []
         st.session_state.audio_key_count += 1
         st.rerun()
 
 # ---------------------------------------------------------
 # 初回起動処理（1問目の出題）
 # ---------------------------------------------------------
-if len(st.session_state.display_messages) == 0:
+if len(st.session_state.chat_history) == 0:
     first_prompt = "スタート！最初の1問目を出題してください。"
+    st.session_state.chat_history.append({"role": "user", "text": first_prompt, "audio_bytes": None})
     
     with st.spinner("コーチを呼び出し中..."):
-        response = st.session_state.chat_session.send_message(first_prompt)
-        st.session_state.display_messages.append({"role": "model", "content": response.text})
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=build_gemini_contents(),
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION,
+                temperature=0.7,
+            )
+        )
+        st.session_state.chat_history.append({"role": "model", "text": response.text, "audio_bytes": None})
 
 # ---------------------------------------------------------
 # チャット履歴の表示
 # ---------------------------------------------------------
-for msg in st.session_state.display_messages:
+for msg in st.session_state.chat_history:
+    # 初回のスタート用発言は非表示
+    if msg["role"] == "user" and msg.get("text") == "スタート！最初の1問目を出題してください。":
+        continue
+        
     avatar = "🤖" if msg["role"] == "model" else "👤"
     with st.chat_message(msg["role"], avatar=avatar):
-        st.markdown(msg["content"])
+        if msg.get("text"):
+            st.markdown(msg["text"])
+        if msg.get("audio_bytes"):
+            st.audio(msg["audio_bytes"], format="audio/wav")
 
 # ---------------------------------------------------------
 # 回答入力エリア
@@ -152,32 +182,50 @@ if audio_val:
     audio_bytes = audio_val.read()
     st.session_state.audio_key_count += 1 # 次回用にUIリセット
 
-    # 今回送る音声Part
-    current_audio_part = types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav")
-
-    # 画面にユーザーの音声表示
-    st.session_state.display_messages.append({"role": "user", "content": "🎙️ [音声で回答しました]"})
+    # ユーザーの発言として最新の音声を履歴に追加
+    st.session_state.chat_history.append({
+        "role": "user",
+        "text": "（音声で回答しました）",
+        "audio_bytes": audio_bytes
+    })
 
     with st.chat_message("user", avatar="👤"):
         st.audio(audio_bytes, format="audio/wav")
 
     with st.chat_message("model", avatar="🤖"):
         with st.spinner("コーチが音声を聞いて採点中..."):
-            response = st.session_state.chat_session.send_message(current_audio_part)
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=build_gemini_contents(),
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    temperature=0.7,
+                )
+            )
+            # 音声評価完了後は、今後のAPI呼び出し軽量化のために音声をクリアしてテキストのみ保存
+            st.session_state.chat_history[-1]["audio_bytes"] = None
+            
             st.markdown(response.text)
-            st.session_state.display_messages.append({"role": "model", "content": response.text})
+            st.session_state.chat_history.append({"role": "model", "text": response.text, "audio_bytes": None})
             st.rerun()
 
 # テキスト入力があった場合
 elif user_input:
-    st.session_state.display_messages.append({"role": "user", "content": user_input})
+    st.session_state.chat_history.append({"role": "user", "text": user_input, "audio_bytes": None})
 
     with st.chat_message("user", avatar="👤"):
         st.write(user_input)
 
     with st.chat_message("model", avatar="🤖"):
         with st.spinner("コーチが採点中..."):
-            response = st.session_state.chat_session.send_message(user_input)
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=build_gemini_contents(),
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    temperature=0.7,
+                )
+            )
             st.markdown(response.text)
-            st.session_state.display_messages.append({"role": "model", "content": response.text})
+            st.session_state.chat_history.append({"role": "model", "text": response.text, "audio_bytes": None})
             st.rerun()
