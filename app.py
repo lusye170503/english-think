@@ -64,9 +64,12 @@ if not api_key:
 client = genai.Client(api_key=api_key)
 
 # 表示・API送信用メッセージの管理
-# 構造: [{"role": "user"|"model", "type": "text"|"audio", "content": text_or_bytes}]
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+# 音声入力Widgetのリセット用カウンター
+if "audio_key_count" not in st.session_state:
+    st.session_state.audio_key_count = 0
 
 def build_api_contents():
     """st.session_state.messages から API用の contents リストを生成する"""
@@ -112,6 +115,7 @@ with st.sidebar:
 
     if st.button("🔄 チャットをリセット"):
         st.session_state.messages = []
+        st.session_state.audio_key_count += 1
         st.rerun()
 
 # ---------------------------------------------------------
@@ -136,7 +140,6 @@ if len(st.session_state.messages) == 0:
 # チャット履歴の表示
 # ---------------------------------------------------------
 for msg in st.session_state.messages:
-    # 初回のスタート用隠し命令は非表示
     if msg["type"] == "text" and msg["content"] == "スタート！最初の1問目を出題してください。":
         continue
     
@@ -152,13 +155,19 @@ for msg in st.session_state.messages:
 # 回答入力エリア
 # ---------------------------------------------------------
 st.write("---")
-audio_val = st.audio_input("🎙️ マイクを押して英語を声で回答する")
+
+# 動的なキーを設定することで、処理後にマイク入力欄をクリーンにリセットする
+audio_key = f"audio_input_{st.session_state.audio_key_count}"
+audio_val = st.audio_input("🎙️ マイクを押して英語を声で回答する", key=audio_key)
 user_input = st.chat_input("またはテキストで入力...")
 
 # 音声入力があった場合
 if audio_val:
     audio_bytes = audio_val.read()
     st.session_state.messages.append({"role": "user", "type": "audio", "content": audio_bytes})
+
+    # 次回の描画時に音声入力欄を初期化するためカウンターを更新
+    st.session_state.audio_key_count += 1
 
     with st.chat_message("user", avatar="👤"):
         st.audio(audio_bytes, format="audio/wav")
