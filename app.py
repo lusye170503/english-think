@@ -49,7 +49,7 @@ SYSTEM_INSTRUCTION = """
 """
 
 # ---------------------------------------------------------
-# Streamlit UI & セッション状態の初期化
+# Streamlit UI & 初期化
 # ---------------------------------------------------------
 st.set_page_config(page_title="瞬間英作文コーチ", page_icon="🔤")
 st.title("🔤 瞬間英作文 App with Gemini")
@@ -63,110 +63,124 @@ if not api_key:
 
 client = genai.Client(api_key=api_key)
 
-# APIに渡す会話履歴の管理
-if "history" not in st.session_state:
-    st.session_state.history = []
+# 表示・API送信用メッセージの管理
+# 構造: [{"role": "user"|"model", "type": "text"|"audio", "content": text_or_bytes}]
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+def build_api_contents():
+    """st.session_state.messages から API用の contents リストを生成する"""
+    contents = []
+    for msg in st.session_state.messages:
+        role = msg["role"]
+        if msg["type"] == "text":
+            contents.append(
+                types.Content(
+                    role=role,
+                    parts=[types.Part.from_text(text=msg["content"])]
+                )
+            )
+        elif msg["type"] == "audio":
+            contents.append(
+                types.Content(
+                    role=role,
+                    parts=[types.Part.from_bytes(data=msg["content"], mime_type="audio/wav")]
+                )
+            )
+    return contents
 
 # ---------------------------------------------------------
-# サイドバー機能（復習ノート作成ボタンなど）
+# サイドバー機能
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("メニュー")
     if st.button("📓 復習ノートを作成する（10問ごと）"):
         prompt_note = "これまでの10問分のレッスン内容（問題・解答・解説・NATポイント）を振り返る、音読練習に使いやすい綺麗な復習用ノートを作成してください。「文法解説」「単語（品詞含む）」「熟語・慣用句」に分類した苦手分析も含めてください。"
-        st.session_state.history.append({"role": "user", "parts": [{"text": prompt_note}]})
+        st.session_state.messages.append({"role": "user", "type": "text", "content": prompt_note})
         
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=st.session_state.history,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                temperature=0.7,
+        with st.spinner("復習ノートを生成中..."):
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=build_api_contents(),
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    temperature=0.7,
+                )
             )
-        )
-        st.session_state.history.append({"role": "model", "parts": [{"text": response.text}]})
-        st.rerun()
+            st.session_state.messages.append({"role": "model", "type": "text", "content": response.text})
+            st.rerun()
 
     if st.button("🔄 チャットをリセット"):
-        st.session_state.clear()
+        st.session_state.messages = []
         st.rerun()
 
 # ---------------------------------------------------------
 # 初回起動処理（1問目の出題）
 # ---------------------------------------------------------
-if len(st.session_state.history) == 0:
+if len(st.session_state.messages) == 0:
     first_prompt = "スタート！最初の1問目を出題してください。"
-    st.session_state.history.append({"role": "user", "parts": [{"text": first_prompt}]})
+    st.session_state.messages.append({"role": "user", "type": "text", "content": first_prompt})
     
     with st.spinner("コーチを呼び出し中..."):
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=st.session_state.history,
+            contents=build_api_contents(),
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
                 temperature=0.7,
             )
         )
-        st.session_state.history.append({"role": "model", "parts": [{"text": response.text}]})
+        st.session_state.messages.append({"role": "model", "type": "text", "content": response.text})
 
 # ---------------------------------------------------------
 # チャット履歴の表示
 # ---------------------------------------------------------
-for msg in st.session_state.history:
-    # メッセージの内容を取り出し
-    parts = msg["parts"]
-    first_part = parts[0]
-    
-    # 初回スタート用の文字列は画面に表示しない
-    if isinstance(first_part, dict) and first_part.get("text") == "スタート！最初の1問目を出題してください。":
+for msg in st.session_state.messages:
+    # 初回のスタート用隠し命令は非表示
+    if msg["type"] == "text" and msg["content"] == "スタート！最初の1問目を出題してください。":
         continue
     
     avatar = "🤖" if msg["role"] == "model" else "👤"
     with st.chat_message(msg["role"], avatar=avatar):
-        if isinstance(first_part, dict) and "text" in first_part:
-            st.write(first_part["text"])
-        elif isinstance(first_part, str):
-            st.write(first_part)
-        else:
-            st.write("🎙️ [音声で回答しました]")
+        if msg["type"] == "text":
+            st.write(msg["content"])
+        elif msg["type"] == "audio":
+            st.audio(msg["content"], format="audio/wav")
+            st.caption("🎙️ [音声で回答]")
 
 # ---------------------------------------------------------
-# 回答入力エリア（テキスト ＆ マイク録音）
+# 回答入力エリア
 # ---------------------------------------------------------
 st.write("---")
 audio_val = st.audio_input("🎙️ マイクを押して英語を声で回答する")
 user_input = st.chat_input("またはテキストで入力...")
 
-# 音声入力があった場合の処理
+# 音声入力があった場合
 if audio_val:
     audio_bytes = audio_val.read()
-    
-    # 画面と履歴に追加
-    user_part = types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav")
-    st.session_state.history.append({"role": "user", "parts": [user_part]})
-    
+    st.session_state.messages.append({"role": "user", "type": "audio", "content": audio_bytes})
+
     with st.chat_message("user", avatar="👤"):
         st.audio(audio_bytes, format="audio/wav")
-        st.caption("録音した音声を送信しました")
 
     with st.chat_message("model", avatar="🤖"):
         with st.spinner("コーチが音声を聞いて採点中..."):
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents=st.session_state.history,
+                contents=build_api_contents(),
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
                     temperature=0.7,
                 )
             )
             st.write(response.text)
-            st.session_state.history.append({"role": "model", "parts": [{"text": response.text}]})
+            st.session_state.messages.append({"role": "model", "type": "text", "content": response.text})
             st.rerun()
 
-# テキスト入力があった場合の処理
+# テキスト入力があった場合
 elif user_input:
-    st.session_state.history.append({"role": "user", "parts": [{"text": user_input}]})
-    
+    st.session_state.messages.append({"role": "user", "type": "text", "content": user_input})
+
     with st.chat_message("user", avatar="👤"):
         st.write(user_input)
 
@@ -174,12 +188,12 @@ elif user_input:
         with st.spinner("コーチが採点中..."):
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents=st.session_state.history,
+                contents=build_api_contents(),
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
                     temperature=0.7,
                 )
             )
             st.write(response.text)
-            st.session_state.history.append({"role": "model", "parts": [{"text": response.text}]})
+            st.session_state.messages.append({"role": "model", "type": "text", "content": response.text})
             st.rerun()
