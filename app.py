@@ -86,25 +86,22 @@ if "audio_key_count" not in st.session_state:
 
 def build_safe_contents(latest_audio_bytes=None):
     """
-    直近6件（3往復）のみを取り出してAPIリクエストを作成。
-    これで長時間のラリーでもデータ超過・エラーを完璧に防ぎます。
+    直近のやり取り（最大6件/3往復分）を安全なテキストコンテンツ形式に変換。
     """
     contents = []
-    
-    # 履歴が長い場合は直近6件（3往復分）だけ送信対象にする
     recent_messages = st.session_state.text_history[-6:] if len(st.session_state.text_history) > 6 else st.session_state.text_history
 
     for msg in recent_messages:
+        role = "user" if msg["role"] == "user" else "model"
         contents.append(
             types.Content(
-                role=msg["role"],
+                role=role,
                 parts=[types.Part.from_text(text=msg["text"])]
             )
         )
         
-    # 最新の音声がある場合は末尾のユーザー発言を音声に置き換える/追加する
-    if latest_audio_bytes:
-        # 直近の入力がテキスト履歴に追加された後なので、末尾を書き換え
+    # 最新の音声回答がある場合は、末尾のユーザー発言のPartを音声バイナリに差し替え
+    if latest_audio_bytes and contents:
         contents[-1] = types.Content(
             role="user",
             parts=[types.Part.from_bytes(data=latest_audio_bytes, mime_type="audio/wav")]
@@ -137,7 +134,7 @@ with st.sidebar:
             st.session_state.text_history.append({"role": "model", "text": response.text})
             st.rerun()
 
-    if st.button("🔄 画面をクリア（次のセッションへ）"):
+    if st.button("🔄 画面をクリア"):
         st.session_state.text_history = []
         st.session_state.audio_key_count += 1
         st.rerun()
@@ -147,12 +144,12 @@ with st.sidebar:
 # ---------------------------------------------------------
 if len(st.session_state.text_history) == 0:
     first_prompt = "スタート！最初の1問目を出題してください。"
-    st.session_state.text_history.append({"role": "user", "text": first_prompt})
     
     with st.spinner("コーチを呼び出し中..."):
+        # 初回は直接テキストプロンプトを渡して確実に出題させる
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=build_safe_contents(),
+            contents=first_prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
                 temperature=0.7,
@@ -164,9 +161,6 @@ if len(st.session_state.text_history) == 0:
 # チャット履歴の表示
 # ---------------------------------------------------------
 for msg in st.session_state.text_history:
-    if msg["role"] == "user" and msg["text"] == "スタート！最初の1問目を出題してください。":
-        continue
-        
     avatar = "🤖" if msg["role"] == "model" else "👤"
     with st.chat_message(msg["role"], avatar=avatar):
         st.markdown(msg["text"])
@@ -185,7 +179,7 @@ if audio_val:
     audio_bytes = audio_val.read()
     st.session_state.audio_key_count += 1
 
-    # 履歴にはテキストとして記録（画面表示用）
+    # 画面表示用に履歴を追加
     st.session_state.text_history.append({"role": "user", "text": "🎙️ （音声で回答しました）"})
 
     with st.chat_message("user", avatar="👤"):
