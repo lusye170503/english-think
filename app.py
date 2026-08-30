@@ -7,24 +7,11 @@ from google.genai import types
 # システムプロンプトの設定
 # ---------------------------------------------------------
 SYSTEM_INSTRUCTION = """
-# 役割 
-あなたは私専属の英会話コーチです。 
-私は瞬間英作文を通して、英語を瞬時に口から出す力を鍛えたいです。 
+あなたは専属の英会話コーチです。ユーザーは「瞬間英作文」を通して、日本語を見た瞬間に英語を反射的に話せるようになることを目指しています。
 
-# 目的 
-日本語を見た瞬間に英語で話せるようになることが目標です。 
-英語を考え込まず、反射的に話せるようにトレーニングしてください。 
-
-# 進め方 
-①日本語を1文だけ出題してください。
-・難易度は中学英語レベルから始める 
-・日常会話でよく使う表現を優先する 
-・1文は15語以内で短めにする 
-
-② 私が英訳します。 
-
-③ 私が回答したら、以下の順番でフィードバックしてください。 
-※見やすさを重視し、項目ごとに必ず改行と空行を入れて読みやすくレイアウトしてください。
+【進め方とフォーマット】
+ユーザーの回答（テキストまたは音声）に対して、必ず以下のフォーマットでフィードバックを行い、最後に次の問題を1問出題してください。
+※見やすさを重視し、各項目の間には必ず空行を入れて読みやすくレイアウトしてください。
 
 【採点】
 ・◯点 / 100点
@@ -47,172 +34,156 @@ SYSTEM_INSTRUCTION = """
 【発音・音声フィードバック】※音声回答時のみ
 ・（発音、アクセント、リンキング、イントネーションの詳細）
 
-④ その後、次の問題を1問だけ出してください。 
+【次の問題】
+・（日本語の文章を1文だけ出題）
 
-# 条件 
-・レベル感は英検3級〜準2級程度まで、中期の目標はCEFRのB1レベル、最終目標はCEFRのB2レベルを目指す
-・アメリカ英語を基準とする
-・英語は私が答えるまで表示しない 
-・解説は日本語で行う 
-・難易度は私の正答率に合わせて自動調整する 
-・同じ文型が続かないようにする 
-・音声データで回答があった場合は、英文の正しさに加えて、実際に聞こえる「発音・リンキング・イントネーションの良さや改善点」も具体的に評価・指導してください。
-・ユーザーから10問ごとの復習ノート作成を求められた場合は、音読練習にも使い易い体裁で、10問分のレッスン内容を振り返る綺麗で読みやすい復習用ノートを作成してください。
+【条件】
+・問題は中学英語レベル（英検3級〜準2級程度、15語以内）から始め、正答率に合わせて自動調整する。
+・同じ文型が連続しないようにする。
+・解説はすべて日本語で行う。
 """
 
 # ---------------------------------------------------------
-# Streamlit UI & 初期化
+# 初期化
 # ---------------------------------------------------------
 st.set_page_config(page_title="瞬間英作文コーチ", page_icon="🔤")
 st.title("🔤 瞬間英作文 App with Gemini")
 
-# APIキー取得
 api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
-
 if not api_key:
     st.error("GEMINI_API_KEY が設定されていません。Secretsを設定してください。")
     st.stop()
 
 client = genai.Client(api_key=api_key)
 
-# 画面表示＆コンテキスト管理用の履歴
-if "text_history" not in st.session_state:
-    st.session_state.text_history = []
+# 学習ログの保持 [{role: "user"|"model", text: "..."}]
+if "history" not in st.session_state:
+    st.session_state.history = []
 
-# 音声入力Widgetのリセット用キー
-if "audio_key_count" not in st.session_state:
-    st.session_state.audio_key_count = 0
-
-
-def build_prompt_from_history():
-    """
-    直近のやり取り（最大6件/3往復）を1つのプロンプトテキストに整形
-    """
-    recent_messages = st.session_state.text_history[-6:] if len(st.session_state.text_history) > 6 else st.session_state.text_history
-    
-    prompt = "以下はこれまでの学習履歴です。文脈を踏まえて次のステップを進めてください。\n\n"
-    for msg in recent_messages:
-        speaker = "ユーザー" if msg["role"] == "user" else "コーチ"
-        prompt += f"[{speaker}]: {msg['text']}\n"
-    
-    prompt += "\n上記を踏まえ、指示に従ってフィードバックと次の問題の出題を行ってください。"
-    return prompt
-
+if "audio_key" not in st.session_state:
+    st.session_state.audio_key = 0
 
 # ---------------------------------------------------------
-# サイドバー機能
+# 補助関数：プロンプトの組み立て
+# ---------------------------------------------------------
+def make_prompt(user_text_override=None):
+    """
+    直近のやり取り（最大3往復）をまとめた1本のテキストプロンプトを作成する
+    """
+    recent_history = st.session_state.history[-6:]
+    
+    prompt_lines = [
+        "以下はここまでのレッスン履歴です。文脈を踏まえて採点・解説を行い、次の問題を出題してください。\n"
+    ]
+    
+    for item in recent_history:
+        label = "ユーザー" if item["role"] == "user" else "コーチ"
+        prompt_lines.append(f"{label}: {item['text']}")
+        
+    if user_text_override:
+        prompt_lines.append(f"ユーザー: {user_text_override}")
+        
+    return "\n".join(prompt_lines)
+
+# ---------------------------------------------------------
+# サイドバー
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("メニュー")
-    st.write(f"現在の総ラリー数: **{len(st.session_state.text_history) // 2} 回**")
+    total_q = len([h for h in st.session_state.history if h["role"] == "user"])
+    st.write(f"回答数: **{total_q} 回**")
     
-    if st.button("📓 復習ノートを作成する（10問ごと）"):
-        prompt_note = "これまでのレッスン内容（問題・解答・解説・ポイント）を振り返る、音読練習に使いやすい綺麗な復習用ノートを作成してください。「文法解説」「単語（品詞含む）」「熟語・慣用句」に分類した苦手分析も含めてください。"
-        
-        st.session_state.text_history.append({"role": "user", "text": prompt_note})
-        
-        with st.spinner("復習ノートを生成中..."):
-            prompt = build_prompt_from_history()
-            response = client.models.generate_content(
+    if st.button("📓 復習ノートを作成する"):
+        note_prompt = make_prompt("これまでのレッスン内容（問題・解答・解説・ポイント）を振り返り、音読練習に使いやすい復習ノートを作成してください。「文法解説」「単語」「熟語」に分類した弱点分析も含めてください。")
+        with st.spinner("復習ノートを作成中..."):
+            res = client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    temperature=0.7,
-                )
+                contents=note_prompt,
+                config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
             )
-            st.session_state.text_history.append({"role": "model", "text": response.text})
+            st.session_state.history.append({"role": "user", "text": "復習ノートの作成をリクエストしました"})
+            st.session_state.history.append({"role": "model", "text": res.text})
             st.rerun()
 
-    if st.button("🔄 画面をクリア"):
-        st.session_state.text_history = []
-        st.session_state.audio_key_count += 1
+    if st.button("🔄 最初からやり直す"):
+        st.session_state.history = []
+        st.session_state.audio_key += 1
         st.rerun()
 
 # ---------------------------------------------------------
-# 初回起動処理（1問目の出題）
+# 初回起動（1問目の自動出題）
 # ---------------------------------------------------------
-if len(st.session_state.text_history) == 0:
-    first_prompt = "スタート！最初の1問目を出題してください。"
-    
-    with st.spinner("コーチを呼び出し中..."):
-        response = client.models.generate_content(
+if len(st.session_state.history) == 0:
+    with st.spinner("コーチを準備中..."):
+        first_prompt = "レッスンを開始します。最初の1問目（日本語）を出題してください。"
+        res = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=first_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                temperature=0.7,
-            )
+            config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
         )
-        st.session_state.text_history.append({"role": "model", "text": response.text})
+        st.session_state.history.append({"role": "model", "text": res.text})
 
 # ---------------------------------------------------------
-# チャット履歴の表示
+# 画面上の履歴表示
 # ---------------------------------------------------------
-for msg in st.session_state.text_history:
-    avatar = "🤖" if msg["role"] == "model" else "👤"
-    with st.chat_message(msg["role"], avatar=avatar):
-        st.markdown(msg["text"])
+for item in st.session_state.history:
+    avatar = "🤖" if item["role"] == "model" else "👤"
+    with st.chat_message(item["role"], avatar=avatar):
+        st.markdown(item["text"])
 
 # ---------------------------------------------------------
-# 回答入力エリア
+# 入力エリア
 # ---------------------------------------------------------
 st.write("---")
 
-audio_key = f"audio_input_{st.session_state.audio_key_count}"
-audio_val = st.audio_input("🎙️ マイクを押して英語を声で回答する", key=audio_key)
-user_input = st.chat_input("またはテキストで入力...")
+audio_val = st.audio_input("🎙️ 声で回答する", key=f"audio_{st.session_state.audio_key}")
+user_text = st.chat_input("またはテキストで回答...")
 
-# 音声入力があった場合
+# 音声入力時の処理
 if audio_val:
     audio_bytes = audio_val.read()
-    st.session_state.audio_key_count += 1
-
-    # 履歴に回答事実を保存
-    st.session_state.text_history.append({"role": "user", "text": "🎙️ （音声で回答しました）"})
-
+    st.session_state.audio_key += 1
+    
+    # 履歴追加（画面用）
+    st.session_state.history.append({"role": "user", "text": "🎙️（音声で回答しました）"})
+    
     with st.chat_message("user", avatar="👤"):
         st.audio(audio_bytes, format="audio/wav")
-
+        
     with st.chat_message("model", avatar="🤖"):
-        with st.spinner("コーチが音声を聞いて採点中..."):
-            # プロンプト（テキスト）と音声バイナリをパーツとして安全に結合
-            text_prompt = build_prompt_from_history()
+        with st.spinner("音声を聞いて採点中..."):
+            prompt_text = make_prompt("（音声で回答しました。以下の音声データを聞いて採点・フィードバックし、次の問題を出題してください）")
+            
+            # テキストプロンプトと音声バイナリを1回のリクエストで送信
             contents = [
-                types.Part.from_text(text=text_prompt),
+                types.Part.from_text(text=prompt_text),
                 types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav")
             ]
             
-            response = client.models.generate_content(
+            res = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    temperature=0.7,
-                )
+                config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
             )
-            st.markdown(response.text)
-            st.session_state.text_history.append({"role": "model", "text": response.text})
+            st.markdown(res.text)
+            st.session_state.history.append({"role": "model", "text": res.text})
             st.rerun()
 
-# テキスト入力があった場合
-elif user_input:
-    st.session_state.text_history.append({"role": "user", "text": user_input})
-
+# テキスト入力時の処理
+elif user_text:
+    st.session_state.history.append({"role": "user", "text": user_text})
+    
     with st.chat_message("user", avatar="👤"):
-        st.write(user_input)
-
+        st.write(user_text)
+        
     with st.chat_message("model", avatar="🤖"):
-        with st.spinner("コーチが採点中..."):
-            prompt = build_prompt_from_history()
-            response = client.models.generate_content(
+        with st.spinner("採点中..."):
+            prompt_text = make_prompt()
+            res = client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    temperature=0.7,
-                )
+                contents=prompt_text,
+                config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
             )
-            st.markdown(response.text)
-            st.session_state.text_history.append({"role": "model", "text": response.text})
+            st.markdown(res.text)
+            st.session_state.history.append({"role": "model", "text": res.text})
             st.rerun()
