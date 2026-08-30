@@ -56,6 +56,13 @@ if not api_key:
 
 client = genai.Client(api_key=api_key)
 
+# 確実なシステム指示設定の生成
+def get_config():
+    return types.GenerateContentConfig(
+        system_instruction=[types.Part.from_text(text=SYSTEM_INSTRUCTION)],
+        temperature=0.7,
+    )
+
 # 学習ログの保持 [{role: "user"|"model", text: "..."}]
 if "history" not in st.session_state:
     st.session_state.history = []
@@ -67,9 +74,6 @@ if "audio_key" not in st.session_state:
 # 補助関数：プロンプトの組み立て
 # ---------------------------------------------------------
 def make_prompt(user_text_override=None):
-    """
-    直近のやり取り（最大3往復）をまとめた1本のテキストプロンプトを作成する
-    """
     recent_history = st.session_state.history[-6:]
     
     prompt_lines = [
@@ -99,7 +103,7 @@ with st.sidebar:
             res = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=note_prompt,
-                config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
+                config=get_config()
             )
             st.session_state.history.append({"role": "user", "text": "復習ノートの作成をリクエストしました"})
             st.session_state.history.append({"role": "model", "text": res.text})
@@ -119,7 +123,7 @@ if len(st.session_state.history) == 0:
         res = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=first_prompt,
-            config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
+            config=get_config()
         )
         st.session_state.history.append({"role": "model", "text": res.text})
 
@@ -144,7 +148,6 @@ if audio_val:
     audio_bytes = audio_val.read()
     st.session_state.audio_key += 1
     
-    # 履歴追加（画面用）
     st.session_state.history.append({"role": "user", "text": "🎙️（音声で回答しました）"})
     
     with st.chat_message("user", avatar="👤"):
@@ -154,7 +157,6 @@ if audio_val:
         with st.spinner("音声を聞いて採点中..."):
             prompt_text = make_prompt("（音声で回答しました。以下の音声データを聞いて採点・フィードバックし、次の問題を出題してください）")
             
-            # テキストプロンプトと音声バイナリを1回のリクエストで送信
             contents = [
                 types.Part.from_text(text=prompt_text),
                 types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav")
@@ -163,7 +165,7 @@ if audio_val:
             res = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=contents,
-                config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
+                config=get_config()
             )
             st.markdown(res.text)
             st.session_state.history.append({"role": "model", "text": res.text})
@@ -182,7 +184,7 @@ elif user_text:
             res = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=prompt_text,
-                config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
+                config=get_config()
             )
             st.markdown(res.text)
             st.session_state.history.append({"role": "model", "text": res.text})
