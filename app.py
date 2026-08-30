@@ -75,8 +75,7 @@ if not api_key:
 
 client = genai.Client(api_key=api_key)
 
-# チャット履歴（画面表示＆API送信用の完全なテキスト履歴）
-# 構造: [{"role": "user"|"model", "text": "..."}]
+# 画面表示用の全履歴
 if "text_history" not in st.session_state:
     st.session_state.text_history = []
 
@@ -85,16 +84,32 @@ if "audio_key_count" not in st.session_state:
     st.session_state.audio_key_count = 0
 
 
-def build_contents_with_text():
-    """テキスト履歴のみから safe な types.Content リストを作成"""
+def build_safe_contents(latest_audio_bytes=None):
+    """
+    直近6件（3往復）のみを取り出してAPIリクエストを作成。
+    これで長時間のラリーでもデータ超過・エラーを完璧に防ぎます。
+    """
     contents = []
-    for msg in st.session_state.text_history:
+    
+    # 履歴が長い場合は直近6件（3往復分）だけ送信対象にする
+    recent_messages = st.session_state.text_history[-6:] if len(st.session_state.text_history) > 6 else st.session_state.text_history
+
+    for msg in recent_messages:
         contents.append(
             types.Content(
                 role=msg["role"],
                 parts=[types.Part.from_text(text=msg["text"])]
             )
         )
+        
+    # 最新の音声がある場合は末尾のユーザー発言を音声に置き換える/追加する
+    if latest_audio_bytes:
+        # 直近の入力がテキスト履歴に追加された後なので、末尾を書き換え
+        contents[-1] = types.Content(
+            role="user",
+            parts=[types.Part.from_bytes(data=latest_audio_bytes, mime_type="audio/wav")]
+        )
+
     return contents
 
 
@@ -103,15 +118,17 @@ def build_contents_with_text():
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("メニュー")
+    st.write(f"現在の総ラリー数: **{len(st.session_state.text_history) // 2} 回**")
+    
     if st.button("📓 復習ノートを作成する（10問ごと）"):
-        prompt_note = "これまでの10問分のレッスン内容（問題・解答・解説・ポイント）を振り返る、音読練習に使いやすい綺麗な復習用ノートを作成してください。「文法解説」「単語（品詞含む）」「熟語・慣用句」に分類した苦手分析も含めてください。"
+        prompt_note = "これまでのレッスン内容（問題・解答・解説・ポイント）を振り返る、音読練習に使いやすい綺麗な復習用ノートを作成してください。「文法解説」「単語（品詞含む）」「熟語・慣用句」に分類した苦手分析も含めてください。"
         
         st.session_state.text_history.append({"role": "user", "text": prompt_note})
         
         with st.spinner("復習ノートを生成中..."):
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents=build_contents_with_text(),
+                contents=build_safe_contents(),
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
                     temperature=0.7,
@@ -120,7 +137,7 @@ with st.sidebar:
             st.session_state.text_history.append({"role": "model", "text": response.text})
             st.rerun()
 
-    if st.button("🔄 チャットをリセット"):
+    if st.button("🔄 画面をクリア（次のセッションへ）"):
         st.session_state.text_history = []
         st.session_state.audio_key_count += 1
         st.rerun()
@@ -135,7 +152,7 @@ if len(st.session_state.text_history) == 0:
     with st.spinner("コーチを呼び出し中..."):
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=build_contents_with_text(),
+            contents=build_safe_contents(),
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
                 temperature=0.7,
@@ -147,7 +164,6 @@ if len(st.session_state.text_history) == 0:
 # チャット履歴の表示
 # ---------------------------------------------------------
 for msg in st.session_state.text_history:
-    # スタート用のプロンプトは画面に表示しない
     if msg["role"] == "user" and msg["text"] == "スタート！最初の1問目を出題してください。":
         continue
         
@@ -169,16 +185,8 @@ if audio_val:
     audio_bytes = audio_val.read()
     st.session_state.audio_key_count += 1
 
-    # 過去のテキスト履歴をベースに構築
-    contents = build_contents_with_text()
-    
-    # 今回の音声回答を末尾の user 発言として正しくセット
-    contents.append(
-        types.Content(
-            role="user",
-            parts=[types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav")]
-        )
-    )
+    # 履歴にはテキストとして記録（画面表示用）
+    st.session_state.text_history.append({"role": "user", "text": "🎙️ （音声で回答しました）"})
 
     with st.chat_message("user", avatar="👤"):
         st.audio(audio_bytes, format="audio/wav")
@@ -187,14 +195,13 @@ if audio_val:
         with st.spinner("コーチが音声を聞いて採点中..."):
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents=contents,
+                contents=build_safe_contents(latest_audio_bytes=audio_bytes),
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
                     temperature=0.7,
                 )
             )
-            # 履歴には音声バイナリを残さず、テキストとして記録する
-            st.session_state.text_history.append({"role": "user", "text": "🎙️ （音声で回答しました）"})
+            st.markdown(response.text)
             st.session_state.text_history.append({"role": "model", "text": response.text})
             st.rerun()
 
@@ -209,11 +216,12 @@ elif user_input:
         with st.spinner("コーチが採点中..."):
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents=build_contents_with_text(),
+                contents=build_safe_contents(),
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
                     temperature=0.7,
                 )
             )
+            st.markdown(response.text)
             st.session_state.text_history.append({"role": "model", "text": response.text})
             st.rerun()
