@@ -43,7 +43,8 @@ SYSTEM_INSTRUCTION = """
 ・解説はすべて日本語で行う。
 """
 
-MODEL_NAME = "gemini-1.5-flash"  # 無料枠制限の緩いモデルへ変更
+# 新SDKで安定して動作し、無料枠制限も広いモデルを指定
+MODEL_NAME = "gemini-2.0-flash"
 
 # ---------------------------------------------------------
 # 初期化
@@ -85,7 +86,7 @@ def make_prompt(user_text_override=None):
     return "\n".join(prompt_lines)
 
 def safe_generate_content(contents):
-    """API上限エラー（429）などを安全にキャッチする呼び出し関数"""
+    """APIエラーを安全にキャッチする呼び出し関数"""
     try:
         res = client.models.generate_content(
             model=MODEL_NAME,
@@ -95,7 +96,7 @@ def safe_generate_content(contents):
         return res.text
     except Exception as e:
         if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-            st.error("⚠️ APIの利用利用制限（クォータ上限）に達しました。少し時間を置いてから再度お試しいただくか、Google AI Studioの利用枠をご確認ください。")
+            st.error("⚠️ APIの利用上限（クォータ制限）に達しました。少し時間を置いてから再度お試しください。")
         else:
             st.error(f"エラーが発生しました: {e}")
         return None
