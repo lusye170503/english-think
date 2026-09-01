@@ -178,7 +178,7 @@ elif user_text:
     
     with st.chat_message("user", avatar="👤"):
         st.write(user_text)
-        
+    
     with st.chat_message("model", avatar="🤖"):
         with st.spinner("採点中..."):
             prompt_text = make_prompt()
