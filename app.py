@@ -44,7 +44,7 @@ SYSTEM_INSTRUCTION = """
 """
 
 # 新SDKで安定して動作し、無料枠制限も広いモデルを指定
-MODEL_NAME = "gemini-2.0-flash"
+MODEL_NAME = "gemini-3.6-flash"
 
 # ---------------------------------------------------------
 # 初期化
